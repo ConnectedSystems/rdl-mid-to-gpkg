@@ -62,20 +62,15 @@ def _attempt_remove(folder, num_attempts=10):
             i += 1
 
 
-def zip_files(file_path: str):
-    """Zip individual files in given directory.
-    
-    Note: Only top-level files are zipped. Nested folders are not supported."""
-    fn = file_path
-    # Filename in archive
-    arcname = os.path.splitext(os.path.basename(fn))[0]
+# def zip_files(file_path: str):
+#     """Zip a given gpkg file."""
+#     fn = file_path
 
-    # Destination zip file
-    dest_zip = os.path.splitext(fn)[0] + ".zip"
-    (zipfile.ZipFile(dest_zip, mode='w')
-            .write(fn, arcname=arcname, compress_type=compression))
+#     # Destination zip file
+#     dest_zip = os.path.splitext(fn)[0] + ".zip"
+#     (zipfile.ZipFile(dest_zip, mode='w')
+#             .write(fn, compress_type=compression))
         
-
 
 @app.command()
 def list_files(src_file: str):
@@ -115,7 +110,12 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
     WARNING: Temporary file will be created in current location.
     """
     mid_files, mif_files = _get_file_list(src_file, pw)
-    command = "7z x -p{pw} {src_file} {fn}"
+
+    command = "7z x"
+    if pw is not None:
+        command += f" -p{pw}"
+
+    command += " {src_file} {fn}"
 
     # Extract mid/mif files and ensure valid
     report = pd.DataFrame({
@@ -134,18 +134,31 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
         try:
             mif = [f for f in mif_files if base in f][0]
             flist = " ".join([mid, mif])
-            ret = subprocess.check_output(command.format(pw=pw, src_file=src_file, fn=flist).split())
 
-            if (b"No files to process" in ret):
+            ret = subprocess.run(command.format(src_file=src_file, fn=flist).split(),
+                                    input="", capture_output=True)
+            stdout = str(ret.stdout.decode('utf-8'))
+            if ret.returncode != 0:
+                if ("Archives with Errors" in stdout):
+                    raise ValueError("Error extracting file: Corrupted, or incorrect password?")
+                raise Exception()
+
+            if ("No files to process" in stdout):
                 raise ValueError(err_msg)
 
-            if (b"Everything is Ok" not in ret):
+            if ("Everything is Ok" not in stdout):
                 raise ValueError(err_msg)
         except ValueError as e:
             print(err_msg)
             # remove temporarily extracted files
             _attempt_remove(base)
+            if "password" in str(e):
+                raise e
             continue
+        except Exception as e:
+            # remove temporarily extracted files
+            _attempt_remove(base)
+            raise e
 
         # Determine filesizes in MBs
         mid_fs = round(os.path.getsize(mid) / 1024**2, 4)
@@ -170,14 +183,13 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
             # Convert to geopackage
             out_fn = _get_file_wo_ext(mid)
             container = os.path.dirname(out_fn)
-            print(out_fn, container)
             os.makedirs(f"{outdir}/{container}", exist_ok=True)
 
             gpkg_file = f"{outdir}/{out_fn}.gpkg"
             tmp.to_file(gpkg_file, driver="GPKG")
 
-            zip_files(gpkg_file)  # zip file up
-            os.remove(gpkg_file)  # delete originally created gpkg
+            # zip_files(gpkg_file)  # zip file up
+            # os.remove(gpkg_file)  # delete originally created gpkg
 
             del(tmp)
 
