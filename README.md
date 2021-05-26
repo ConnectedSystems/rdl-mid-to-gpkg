@@ -1,6 +1,6 @@
 rdl-mid-to-gpkg
 
-A utility program for GFDRR RDL to convert MapInfo files to geopackage.
+A utility program for GFDRR RDL to convert MapInfo files inside a 7z file to geopackage.
 
 Currently only tested on Windows.
 
