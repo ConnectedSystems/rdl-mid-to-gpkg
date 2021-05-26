@@ -194,5 +194,7 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
 
 
 if __name__ == "__main__":
-    pw = os.environ['rdl_pw']
+    pw = os.environ.get('rdl_pw', None)
+    if pw is None:
+        print("Warning: No password set.")
     app()
