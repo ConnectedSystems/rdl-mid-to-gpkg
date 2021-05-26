@@ -35,7 +35,7 @@ Use with the `convert-to-gpkg` command
 $ python mid2gpkg.py convert-to-gpkg [PATH TO 7z FILE] --outdir [DESTINATION FOLDER]
 ```
 
-iF `--outdir` is not specified, then the files are placed in a `gpkgs` directory created in the
+If `--outdir` is not specified, then the files are placed in a `gpkgs` directory created in the
 current location.
 
 
@@ -65,6 +65,7 @@ Download the files for your python version and pip install each in the order sho
 * https://www.lfd.uci.edu/~gohlke/pythonlibs/#gdal
 * https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyproj
 * https://www.lfd.uci.edu/~gohlke/pythonlibs/#shapely
+* https://www.lfd.uci.edu/~gohlke/pythonlibs/#fiona
 * https://www.lfd.uci.edu/~gohlke/pythonlibs/#geopandas
 
 ```bash
