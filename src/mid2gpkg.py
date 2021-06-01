@@ -1,6 +1,7 @@
 import os, re, shutil
 import subprocess
 import zipfile
+from glob import glob
 
 import typer
 import py7zr
@@ -101,6 +102,79 @@ def extract_files(src_file: str, filename:str = None, outdir:str = None):
         raise ValueError(err_msg)
 
 
+def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
+    """Convert all MapInfo MID files inside the given directory to geopackage.
+    
+    Outputs a `report.csv` file with a summary of files found.
+    """
+    if src_dir.endswith("/"):
+        src_dir = src_dir[:-1]
+
+    fn_list = glob(src_dir+"/**/*.*", recursive=True)
+    mid_files = []
+    mif_files = []
+    for f in fn_list:
+        if mid_pattern.search(f):
+            mid_files.append(f)
+        elif mif_pattern.search(f):
+            mif_files.append(f)
+
+    # Extract mid/mif files and ensure valid
+    report = pd.DataFrame({
+        'filename': [],
+        'mid_filesize': [],
+        'mif_filesize': [],
+        'num_features': [],
+        'num_attributes': []
+    })
+
+    for idx, mid in tqdm(enumerate(mid_files)):
+        pd_idx = idx
+
+        base = _get_file_wo_ext(mid)
+
+        try:
+            mif = [f for f in mif_files if base in f][0]
+        except IndexError:
+            # no mif files...
+            continue
+
+        # Determine filesizes in MBs
+        mid_fs = round(os.path.getsize(mid) / 1024**2, 4)
+        mif_fs = round(os.path.getsize(mif) / 1024**2, 4)
+
+        try:
+            tmp = gpd.read_file(mid)
+
+            # -1 col count for attributes as "geometries" will be one of the columns
+            gpd_rows = len(tmp.index)
+            gpd_cols = len(tmp.columns)-1
+
+            # Coerce bytes to string if necessary
+            for col in tmp.columns:
+                if col == 'geometry':
+                    continue
+                if tmp[col].dtype == object:
+                    if not np.all(tmp[col].apply(type) != bytes):
+                        tmp[col] = tmp[col].apply(str)
+            # End for
+
+            # Convert to geopackage
+            container = os.path.dirname(base)
+            os.makedirs(f"{outdir}/{container}", exist_ok=True)
+
+            gpkg_file = f"{outdir}/{base}.gpkg"
+            tmp.to_file(gpkg_file, driver="GPKG")
+
+            del(tmp)
+
+            report.loc[pd_idx, :] = (base, mid_fs, mif_fs, gpd_rows, gpd_cols)
+
+        except Exception as e:
+            print(e)
+            report.loc[pd_idx, :] = (f"{base}: {str(e)}", mid_fs, mif_fs, np.nan, np.nan)
+
+
 @app.command()
 def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
     """Convert all MapInfo MID files inside a 7z file to geopackage and zip them separately.
@@ -109,6 +183,14 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
 
     WARNING: Temporary file will be created in current location.
     """
+    if not src_file.endswith("7z"):
+        if os.path.isdir(src_file):
+            # assume directory if src_file does not have extension
+            convert_folder_to_gpkg(src_dir=src_file, outdir=outdir)
+        else:
+            print("Specified file does not end with 7z, or is not a directory.")
+        return
+
     mid_files, mif_files = _get_file_list(src_file, pw)
 
     command = "7z x"
@@ -133,6 +215,11 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
         err_msg = f"Error occurred extracting {base}"
         try:
             mif = [f for f in mif_files if base in f][0]
+        except IndexError:
+            # no mif files...
+            continue
+
+        try:
             flist = " ".join([mid, mif])
 
             ret = subprocess.run(command.format(src_file=src_file, fn=flist).split(),
@@ -208,5 +295,5 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
 if __name__ == "__main__":
     pw = os.environ.get('rdl_pw', None)
     if pw is None:
-        print("Warning: No password set.")
+        print("Note: No password set.")
     app()
