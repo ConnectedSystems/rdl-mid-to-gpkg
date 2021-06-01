@@ -160,10 +160,12 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
             # End for
 
             # Convert to geopackage
-            container = os.path.dirname(base)
+            out_fn = _get_file_wo_ext(mid)
+            out_fn = os.path.basename(out_fn)
+            container = os.path.basename(os.path.dirname(base))
             os.makedirs(f"{outdir}/{container}", exist_ok=True)
 
-            gpkg_file = f"{outdir}/{base}.gpkg"
+            gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
             tmp.to_file(gpkg_file, driver="GPKG")
 
             del(tmp)
@@ -269,10 +271,11 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
 
             # Convert to geopackage
             out_fn = _get_file_wo_ext(mid)
-            container = os.path.dirname(out_fn)
+            out_fn = os.path.basename(out_fn)
+            container = os.path.basename(os.path.dirname(base))
             os.makedirs(f"{outdir}/{container}", exist_ok=True)
 
-            gpkg_file = f"{outdir}/{out_fn}.gpkg"
+            gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
             tmp.to_file(gpkg_file, driver="GPKG")
 
             # zip_files(gpkg_file)  # zip file up
