@@ -51,7 +51,7 @@ def _find_column_start(fp):
 
 def _squash_column_spec(mif):
     """Modify MIF column specification.
-    
+
     Makes it lok like there is only one column.
 
     Returns modified contents and list of original column names.
@@ -125,15 +125,15 @@ def _attempt_remove(folder, num_attempts=10):
 
 def handle_large_files(orig_mid, orig_mif, out_fn):
     """Handle MapInfo files with large number of columns/data.
-    
+
     Some files were written directly with a custom C++ library
-    given the large amount of data. Unfortunately the standard 
+    given the large amount of data. Unfortunately the standard
     GDAL libraries cannot handle these due to a line length limit.
 
     This has the effect of only a few rows (out of potentially
     thousands) being correctly read in and accessible.
 
-    This function creates a dummy MID/MIF dataset with a single 
+    This function creates a dummy MID/MIF dataset with a single
     column, so it is readable by GeoPandas.
 
     The dummy file is then used to extract column names and
@@ -312,7 +312,7 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
 
 @app.command()
 def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
-    """Convert all MapInfo MID files inside a 7z file or directory 
+    """Convert all MapInfo MID files inside a 7z file or directory
     to geopackage.
 
     Outputs a `report.csv` file with a summary of files found.
