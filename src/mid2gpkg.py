@@ -1,4 +1,5 @@
 import os, re, shutil
+from io import StringIO
 import subprocess
 import zipfile
 from glob import glob
@@ -9,13 +10,10 @@ from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
-# import fiona
-# import fiona._shim
-# import fiona.schema
 import geopandas as gpd
 
 
-try: 
+try:
     import zlib  # import necessary as it provides the compression
     compression = zipfile.ZIP_DEFLATED
 except Exception:
@@ -27,6 +25,68 @@ app = typer.Typer()
 
 mid_pattern = re.compile(r"(.mid)")
 mif_pattern = re.compile(r"(.mif)")
+
+DATAPOINT = re.compile('data', re.IGNORECASE)
+COLPOINT = "columns"
+
+
+def _find_data_line(fp):
+    fp.seek(0)
+    for idx, line in enumerate(fp):
+        if DATAPOINT.match(line):
+            return idx
+
+    # no match found
+    return False
+
+
+def _find_column_start(fp):
+    fp.seek(0)
+    for idx, line in enumerate(fp):
+        if COLPOINT in line.lower():
+            return idx
+
+    return False
+
+
+def _squash_column_spec(mif):
+    """Modify MIF column specification.
+    
+    Makes it lok like there is only one column.
+
+    Returns modified contents and list of original column names.
+    """
+    with open(mif) as fp:
+        col_start = _find_column_start(fp)
+        data_point = _find_data_line(fp)
+
+        assert col_start < data_point, "Column definition should be before start of data!"
+
+        fp.seek(0)
+        contents = fp.readlines()
+
+    # Get specified number of columns
+    col_num_spec = contents[col_start]
+    num_cols = re.sub('^columns ', '', col_num_spec, flags=re.IGNORECASE)
+    num_cols = int(num_cols)
+
+    # replace column spec with dummy
+    contents[col_start] = "Columns 1\n"
+
+    # Extract column names
+    columns = contents[col_start+1:col_start+(num_cols+1)]
+    columns = [c.strip().split(" ")[0] for c in columns]
+
+    # Remove other columns from spec (we want to leave 1 though)
+    del contents[col_start+2:col_start+(num_cols+1)]
+
+    return contents, columns
+
+
+def _write_modded_mif(contents, fn="tmp.mif"):
+    modded_mif = StringIO("".join(contents))
+    with open(fn, mode='w') as f:
+        print(modded_mif.getvalue(), file=f)
 
 
 def _get_file_wo_ext(fn: str):
@@ -63,6 +123,66 @@ def _attempt_remove(folder, num_attempts=10):
             i += 1
 
 
+def handle_large_files(orig_mid, orig_mif, out_fn):
+    """Handle MapInfo files with large number of columns/data.
+    
+    Some files were written directly with a custom C++ library
+    given the large amount of data. Unfortunately the standard 
+    GDAL libraries cannot handle these due to a line length limit.
+
+    This has the effect of only a few rows (out of potentially
+    thousands) being correctly read in and accessible.
+
+    This function creates a dummy MID/MIF dataset with a single 
+    column, so it is readable by GeoPandas.
+
+    The dummy file is then used to extract column names and
+    geometries.
+
+    The MID file holds a large headerless table, which we read in
+    with Pandas, assign the previously extracted columns, and
+    convert to a GeoDataFrame with the associated geometries.
+
+    Once this is down the data to exported to GeoPackage.
+
+    See [1] for more information.
+
+    References
+    ----------
+    1. https://github.com/oi-analytics/oi-risk-vis/issues/8
+    """
+    modded_contents, columns = _squash_column_spec(orig_mif)
+
+    _write_modded_mif(modded_contents)
+
+    # Read original mid file
+    df = pd.read_csv(orig_mid, header=None)
+    df.columns = columns
+
+    # Export single column file for dummy geodataframe
+    df.iloc[:, 0].to_csv("tmp.mid", index=False)
+
+    # Read in dummy data set to get geometries
+    dummy_gdf = gpd.read_file("tmp.mid")
+
+    # Create full geodataframe
+    new_gdf = gpd.GeoDataFrame(df, geometry=dummy_gdf.geometry)
+
+    # Coerce bytes to string if necessary
+    for col in new_gdf.columns:
+        if col == 'geometry':
+            continue
+        if new_gdf[col].dtype == object:
+            if not np.all(new_gdf[col].apply(type) != bytes):
+                new_gdf[col] = new_gdf[col].apply(str)
+    # End for
+
+    new_gdf.to_file(out_fn, driver="GPKG")
+
+    os.remove('tmp.mid')
+    os.remove('tmp.mif')
+
+
 # def zip_files(file_path: str):
 #     """Zip a given gpkg file."""
 #     fn = file_path
@@ -71,7 +191,7 @@ def _attempt_remove(folder, num_attempts=10):
 #     dest_zip = os.path.splitext(fn)[0] + ".zip"
 #     (zipfile.ZipFile(dest_zip, mode='w')
 #             .write(fn, compress_type=compression))
-        
+
 
 @app.command()
 def list_files(src_file: str):
@@ -88,7 +208,7 @@ def extract_files(src_file: str, filename:str = None, outdir:str = None):
 
     if filename:
         command += f" {filename}"
-    
+
     if outdir:
         command += f" -o{outdir}"
 
@@ -104,7 +224,7 @@ def extract_files(src_file: str, filename:str = None, outdir:str = None):
 
 def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
     """Convert all MapInfo MID files inside the given directory to geopackage.
-    
+
     Outputs a `report.csv` file with a summary of files found.
     """
     if src_dir.endswith("/"):
@@ -159,6 +279,19 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
                         tmp[col] = tmp[col].apply(str)
             # End for
 
+            cross_check = pd.read_csv(mid, header=None)
+            if gpd_rows != len(cross_check.index):
+                del(tmp)
+                del(cross_check)
+
+                out_fn = _get_file_wo_ext(mid)
+                out_fn = os.path.basename(out_fn)
+                container = os.path.basename(os.path.dirname(base))
+                os.makedirs(f"{outdir}/{container}", exist_ok=True)
+                gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
+                handle_large_files(mid, mif, gpkg_file)
+                continue
+
             # Convert to geopackage
             out_fn = _get_file_wo_ext(mid)
             out_fn = os.path.basename(out_fn)
@@ -179,8 +312,9 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
 
 @app.command()
 def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
-    """Convert all MapInfo MID files inside a 7z file to geopackage and zip them separately.
-    
+    """Convert all MapInfo MID files inside a 7z file or directory 
+    to geopackage.
+
     Outputs a `report.csv` file with a summary of files found.
 
     WARNING: Temporary file will be created in current location.
@@ -255,6 +389,10 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
 
         try:
             tmp = gpd.read_file(mid)
+            # tmp2 = pd.read_csv(mid, header=None)
+            # tmp2.columns = tmp.loc[:, tmp.columns != "geometry"].columns
+            # gdf = gpd.GeoDataFrame
+            # gdf = gpd.GeoDataFrame(tmp2, geometry=tmp.geometry)
 
             # -1 col count for attributes as "geometries" will be one of the columns
             gpd_rows = len(tmp.index)
@@ -288,7 +426,7 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
         except Exception as e:
             print(e)
             report.loc[pd_idx, :] = (f"{base}: {str(e)}", mid_fs, mif_fs, np.nan, np.nan)
-        
+
         # remove temporarily extracted files
         _attempt_remove(base)
 
