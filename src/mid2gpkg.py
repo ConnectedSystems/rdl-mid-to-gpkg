@@ -123,7 +123,7 @@ def _attempt_remove(folder, num_attempts=10):
             i += 1
 
 
-def handle_large_files(orig_mid, orig_mif, out_fn):
+def handle_large_files(orig_mid, orig_mif, out_fn, df=None):
     """Handle MapInfo files with large number of columns/data.
 
     Some files were written directly with a custom C++ library
@@ -156,7 +156,8 @@ def handle_large_files(orig_mid, orig_mif, out_fn):
     _write_modded_mif(modded_contents)
 
     # Read original mid file
-    df = pd.read_csv(orig_mid, header=None)
+    if df is None:
+        df = pd.read_csv(orig_mid, header=None)
     df.columns = columns
 
     # Export single column file for dummy geodataframe
@@ -167,6 +168,7 @@ def handle_large_files(orig_mid, orig_mif, out_fn):
 
     # Create full geodataframe
     new_gdf = gpd.GeoDataFrame(df, geometry=dummy_gdf.geometry)
+    del(dummy_gdf)
 
     # Coerce bytes to string if necessary
     for col in new_gdf.columns:
@@ -230,6 +232,7 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
     if src_dir.endswith("/"):
         src_dir = src_dir[:-1]
 
+    # get list of files
     fn_list = glob(src_dir+"/**/*.*", recursive=True)
     mid_files = []
     mif_files = []
@@ -249,7 +252,7 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
     })
 
     for idx, mid in tqdm(enumerate(mid_files)):
-        pd_idx = idx
+        fn_idx = idx
 
         base = _get_file_wo_ext(mid)
 
@@ -270,6 +273,23 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
             gpd_rows = len(tmp.index)
             gpd_cols = len(tmp.columns)-1
 
+            cross_check = pd.read_csv(mid, header=None)
+            pd_rows = len(cross_check.index)
+            pd_cols = len(cross_check.columns)
+            if gpd_rows != pd_rows:
+                del(tmp)
+
+                # Set up folders and create filename
+                out_fn = _get_file_wo_ext(mid)
+                out_fn = os.path.basename(out_fn)
+                container = os.path.basename(os.path.dirname(base))
+                os.makedirs(f"{outdir}/{container}", exist_ok=True)
+                gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
+                report.loc[fn_idx, :] = (base, mid_fs, mif_fs, pd_rows, pd_cols)
+
+                handle_large_files(mid, mif, gpkg_file, df=cross_check)
+                continue
+
             # Coerce bytes to string if necessary
             for col in tmp.columns:
                 if col == 'geometry':
@@ -278,19 +298,6 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
                     if not np.all(tmp[col].apply(type) != bytes):
                         tmp[col] = tmp[col].apply(str)
             # End for
-
-            cross_check = pd.read_csv(mid, header=None)
-            if gpd_rows != len(cross_check.index):
-                del(tmp)
-                del(cross_check)
-
-                out_fn = _get_file_wo_ext(mid)
-                out_fn = os.path.basename(out_fn)
-                container = os.path.basename(os.path.dirname(base))
-                os.makedirs(f"{outdir}/{container}", exist_ok=True)
-                gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
-                handle_large_files(mid, mif, gpkg_file)
-                continue
 
             # Convert to geopackage
             out_fn = _get_file_wo_ext(mid)
@@ -303,11 +310,13 @@ def convert_folder_to_gpkg(src_dir: str, outdir: str = "./gpkgs"):
 
             del(tmp)
 
-            report.loc[pd_idx, :] = (base, mid_fs, mif_fs, gpd_rows, gpd_cols)
+            report.loc[fn_idx, :] = (base, mid_fs, mif_fs, gpd_rows, gpd_cols)
 
         except Exception as e:
             print(e)
-            report.loc[pd_idx, :] = (f"{base}: {str(e)}", mid_fs, mif_fs, np.nan, np.nan)
+            report.loc[fn_idx, :] = (f"{base}: {str(e)}", mid_fs, mif_fs, np.nan, np.nan)
+    
+    report.to_csv("report.csv")
 
 
 @app.command()
@@ -407,12 +416,13 @@ def convert_to_gpkg(src_file: str, outdir: str = "./gpkgs"):
                         tmp[col] = tmp[col].apply(str)
             # End for
 
-            # Convert to geopackage
+            # Set up directories
             out_fn = _get_file_wo_ext(mid)
             out_fn = os.path.basename(out_fn)
             container = os.path.basename(os.path.dirname(base))
             os.makedirs(f"{outdir}/{container}", exist_ok=True)
 
+            # Convert to geopackage
             gpkg_file = f"{outdir}/{container}/{out_fn}.gpkg"
             tmp.to_file(gpkg_file, driver="GPKG")
 
